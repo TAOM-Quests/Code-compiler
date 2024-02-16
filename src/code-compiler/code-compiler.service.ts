@@ -10,46 +10,27 @@ export class CodeCompilerService {
   async compileAndExecute(language: string, code: string): Promise<string> {
     switch (language.toLowerCase()) {
       case 'javascript':
-        return this.executeJavaScript(code);
+        return this.executeVariousLanguages(code, 'node', ['-e', code]);
       case 'python':
-        return this.executePython(code);
+        return this.executeVariousLanguages(code, 'python', ['-c', code]);
       case 'csharp':
         return this.executeCSharp(code);
       case 'java':
         return this.executeJava(code);
+      case 'cpp':
+        return this.executeCpp(code);
       default:
         return Promise.reject('Unsupported language');
     }
   }
 
-  private executeJavaScript(code: string): Promise<string> {
+  private async executeVariousLanguages(
+    code: string,
+    interpreter: string,
+    args: string[],
+  ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      const childProcess = spawn('node', ['-e', code]);
-
-      let output = '';
-      let error = '';
-
-      childProcess.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      childProcess.stderr.on('data', (data) => {
-        error += data.toString();
-      });
-
-      childProcess.on('close', (exitCode) => {
-        if (exitCode === 0) {
-          resolve(output);
-        } else {
-          reject(error || 'Code execution failed');
-        }
-      });
-    });
-  }
-
-  private executePython(code: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      const childProcess = spawn('python', ['-c', code]);
+      const childProcess = spawn(interpreter, args);
 
       let output = '';
       let error = '';
@@ -116,7 +97,7 @@ export class CodeCompilerService {
 
       const className = this.extractClassName(code);
 
-      const compileResult = await this.compileJava(filePath);
+      const compileResult = await this.compileCode('javac', [filePath]);
 
       if (compileResult.stderr) {
         return compileResult.stderr;
@@ -135,12 +116,13 @@ export class CodeCompilerService {
     }
   }
 
-  private compileJava(
-    filePath: string,
+  private compileCode(
+    command: string,
+    args: string[],
   ): Promise<{ stdout: string; stderr: string }> {
     return new Promise<{ stdout: string; stderr: string }>(
       (resolve, reject) => {
-        const childProcess = spawn('javac', [filePath]);
+        const childProcess = spawn(command, args);
 
         let stderr = '';
 
@@ -191,5 +173,72 @@ export class CodeCompilerService {
     const classRegex = /class\s+([A-Za-z_$][A-Za-z\d_$]*)/;
     const match = code.match(classRegex);
     return match ? match[1] : 'Main';
+  }
+  private async executeCpp(code: string): Promise<string> {
+    try {
+      const folderName = uuidv4();
+
+      await mkdir(folderName);
+
+      const fileName = `${uuidv4()}.cpp`;
+
+      const filePath = join(folderName, fileName);
+      await writeFile(filePath, code);
+
+      const className = 'a.exe';
+
+      const compileResult = await this.compileCode('g++', [
+        filePath,
+        '-o',
+        join(folderName, 'a.exe'),
+      ]);
+
+      if (compileResult.stderr) {
+        return compileResult.stderr;
+      }
+
+      const executionResult = await this.executeCppProgram(
+        folderName,
+        className,
+      );
+
+      await rm(folderName, { recursive: true });
+
+      return executionResult;
+    } catch (error) {
+      return error.message;
+    }
+  }
+
+  private executeCppProgram(
+    folderName: string,
+    className: string,
+  ): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const childProcess = spawn(`./${folderName}/${className}`);
+
+      let output = '';
+      let error = '';
+
+      childProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+
+      childProcess.stderr.on('data', (data) => {
+        error += data.toString();
+      });
+
+      childProcess.on('error', (error) => {
+        reject(error);
+      });
+
+      childProcess.on('close', (exitCode) => {
+        if (exitCode === 0) {
+          resolve(output);
+        } else {
+          reject(error || 'Code execution failed');
+        }
+      });
+    });
   }
 }
