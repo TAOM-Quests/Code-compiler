@@ -3,29 +3,41 @@ import { spawn } from 'child_process';
 import { writeFile, mkdir, rm, rename } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { join } from 'path';
+import * as iconv from 'iconv-lite';
 
 @Injectable()
 export class CodeCompilerService {
   async compileAndExecute(language: string, code: string): Promise<string> {
-    switch (language.toLowerCase()) {
-      case 'javascript':
-        return this.executeVariousLanguages(code, 'node', ['-e', code]);
-      case 'python':
-        return this.executeVariousLanguages(code, 'python', ['-c', code]);
-      case 'csharp':
-        return this.executeCS(code);
-      case 'java':
-        return this.executeJava(code);
-      case 'cpp':
-        return this.executeCpp(code);
-      default:
-        return Promise.reject('Unsupported language');
+    try {
+      switch (language.toLowerCase()) {
+        case 'javascript':
+          return this.executeVariousLanguages(code, 'node', 'utf-8', [
+            '-e',
+            code,
+          ]);
+        case 'python':
+          return this.executeVariousLanguages(code, 'python', 'Windows-1251', [
+            '-c',
+            code,
+          ]);
+        case 'csharp':
+          return this.executeCS(code);
+        case 'java':
+          return this.executeJava(code);
+        case 'cpp':
+          return this.executeCpp(code);
+        default:
+          return Promise.reject('Unsupported language');
+      }
+    } catch (error) {
+      return error.message;
     }
   }
 
   private async executeVariousLanguages(
     code: string,
     interpreter: string,
+    encoding: string,
     args: string[],
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
@@ -35,11 +47,11 @@ export class CodeCompilerService {
       let error = '';
 
       childProcess.stdout.on('data', (data) => {
-        output += data.toString();
+        output += iconv.decode(Buffer.from(data), encoding);
       });
 
       childProcess.stderr.on('data', (data) => {
-        error += data.toString();
+        error += iconv.decode(Buffer.from(data), encoding);
       });
 
       childProcess.on('close', (exitCode) => {
@@ -49,23 +61,30 @@ export class CodeCompilerService {
           reject(error || 'Code execution failed');
         }
       });
+
+      childProcess.on('error', (err) => {
+        reject(err);
+      });
     });
   }
 
   private async executeJava(code: string): Promise<string> {
+    const folderName = uuidv4();
     try {
-      const folderName = uuidv4();
+      const structuredCode = this.wrapJavaCode(code);
 
       await mkdir(folderName);
 
       const fileName = `${uuidv4()}.java`;
 
       const filePath = join(folderName, fileName);
-      await writeFile(filePath, code);
+      await writeFile(filePath, structuredCode);
 
       const className = this.extractClassName(code);
 
-      const compileResult = await this.compileCode('javac', [filePath]);
+      const compileResult = await this.compileCode('javac', 'Windows-1251', [
+        filePath,
+      ]);
 
       if (compileResult.stderr) {
         return compileResult.stderr;
@@ -76,27 +95,35 @@ export class CodeCompilerService {
         className,
       );
 
-      await rm(folderName, { recursive: true });
-
       return executionResult;
     } catch (error) {
-      return error.message;
+      const errorMessage = error.stdout
+        ? error.stdout.toString('utf-8')
+        : error.stderr
+          ? error.stderr.toString('utf-8')
+          : error.message
+            ? error.message
+            : 'Unknown error occurred';
+      return errorMessage;
+    } finally {
+      await rm(folderName, { recursive: true });
     }
   }
   private async executeCpp(code: string): Promise<string> {
+    const folderName = uuidv4();
     try {
-      const folderName = uuidv4();
+      const structuredCode = this.wrapCppCode(code);
 
       await mkdir(folderName);
 
       const fileName = `${uuidv4()}.cpp`;
 
       const filePath = join(folderName, fileName);
-      await writeFile(filePath, code);
+      await writeFile(filePath, structuredCode);
 
       const execFileName = 'a.exe';
 
-      const compileResult = await this.compileCode('g++', [
+      const compileResult = await this.compileCode('g++', 'utf-8', [
         filePath,
         '-o',
         join(folderName, 'a.exe'),
@@ -109,30 +136,39 @@ export class CodeCompilerService {
       const executionResult = await this.executeProgram(
         folderName,
         execFileName,
+        'utf-8',
       );
-
-      await rm(folderName, { recursive: true });
 
       return executionResult;
     } catch (error) {
-      return error.message;
+      const errorMessage = error.stdout
+        ? error.stdout.toString('utf-8')
+        : error.stderr
+          ? error.stderr.toString('utf-8')
+          : error.message
+            ? error.message
+            : 'Unknown error occurred';
+      return errorMessage;
+    } finally {
+      await rm(folderName, { recursive: true });
     }
   }
 
   private async executeCS(code: string): Promise<string> {
+    const folderName = uuidv4();
     try {
-      const folderName = uuidv4();
+      const structuredCode = this.wrapCSharpCode(code);
 
       await mkdir(folderName);
 
       const fileName = `${uuidv4()}.cs`;
 
       const filePath = join(folderName, fileName);
-      await writeFile(filePath, code);
+      await writeFile(filePath, structuredCode);
 
       const execFileName = `${fileName.substring(0, fileName.length - 3)}.exe`;
 
-      const compileResult = await this.compileCode('csc', [filePath]);
+      const compileResult = await this.compileCode('csc', 'CP866', [filePath]);
 
       await rename(execFileName, join(folderName, execFileName));
 
@@ -143,36 +179,104 @@ export class CodeCompilerService {
       const executionResult = await this.executeProgram(
         folderName,
         execFileName,
+        'CP866',
       );
-
-      await rm(folderName, { recursive: true });
 
       return executionResult;
     } catch (error) {
-      return error.message;
+      const errorMessage = error.stdout
+        ? this.removeHeader(error.stdout.toString('utf-8'))
+        : error.stderr
+          ? this.removeHeader(error.stderr.toString('utf-8'))
+          : error.message
+            ? error.message
+            : 'Unknown error occurred';
+      return errorMessage;
+    } finally {
+      await rm(folderName, { recursive: true });
     }
+  }
+  private removeHeader(errorMsg: string): string {
+    const headerIndex = errorMsg.indexOf('error');
+    if (headerIndex !== -1) {
+      return errorMsg.substring(headerIndex);
+    }
+    return errorMsg;
+  }
+  private wrapCSharpCode(code: string): string {
+    if (
+      !code.includes('namespace') &&
+      !code.includes('class') &&
+      !code.includes('Main')
+    ) {
+      return `using System;
+      namespace MyCode
+      {
+        class Program 
+        {
+          static void Main(string[] args)
+          {
+            ${code}
+          }
+        }
+      }`;
+    }
+    return code;
+  }
+
+  private wrapJavaCode(code: string): string {
+    if (!code.includes('class') && !code.includes('Main')) {
+      return `class Main 
+      {
+        public static void main(String[] args) {
+          ${code}
+        }
+    }`;
+    }
+    return code;
+  }
+
+  private wrapCppCode(code: string): string {
+    if (!code.includes('int main')) {
+      return `#include <iostream>
+      using namespace std;
+      int main() {
+        ${code}
+        return 0;
+      }`;
+    }
+    return code;
   }
 
   private compileCode(
     command: string,
+    encoding: string,
     args: string[],
   ): Promise<{ stdout: string; stderr: string }> {
     return new Promise<{ stdout: string; stderr: string }>(
       (resolve, reject) => {
         const childProcess = spawn(command, args);
-
+        let stdout = '';
         let stderr = '';
 
+        childProcess.stdout.on('data', (data) => {
+          stdout += iconv.decode(Buffer.from(data), encoding);
+        });
+
         childProcess.stderr.on('data', (data) => {
-          stderr += data.toString();
+          stderr += iconv.decode(Buffer.from(data), encoding);
         });
 
         childProcess.on('close', (exitCode) => {
           if (exitCode === 0) {
-            resolve({ stdout: '', stderr });
+            resolve({ stdout, stderr });
           } else {
-            reject({ stdout: '', stderr });
+            reject({ stdout, stderr });
           }
+        });
+
+        childProcess.on('error', (error) => {
+          reject({ stdout: '', stderr: error.toString() });
         });
       },
     );
@@ -189,11 +293,11 @@ export class CodeCompilerService {
       let error = '';
 
       childProcess.stdout.on('data', (data) => {
-        output += data.toString();
+        output += iconv.decode(Buffer.from(data), 'Windows-1251');
       });
 
       childProcess.stderr.on('data', (data) => {
-        error += data.toString();
+        error += iconv.decode(Buffer.from(data), 'Windows-1251');
       });
 
       childProcess.on('close', (exitCode) => {
@@ -208,6 +312,7 @@ export class CodeCompilerService {
   private executeProgram(
     folderName: string,
     execFileName: string,
+    encoding: string,
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const childProcess = spawn(`./${folderName}/${execFileName}`);
@@ -216,11 +321,11 @@ export class CodeCompilerService {
       let error = '';
 
       childProcess.stdout.on('data', (data) => {
-        output += data.toString();
+        output += iconv.decode(Buffer.from(data), encoding);
       });
 
       childProcess.stderr.on('data', (data) => {
-        error += data.toString();
+        error += iconv.decode(Buffer.from(data), encoding);
       });
 
       childProcess.on('error', (error) => {
