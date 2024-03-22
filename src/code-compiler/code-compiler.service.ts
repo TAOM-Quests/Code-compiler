@@ -7,7 +7,11 @@ import * as iconv from 'iconv-lite';
 
 @Injectable()
 export class CodeCompilerService {
-  async compileAndExecute(language: string, code: string): Promise<string> {
+  async compileAndExecute(
+    language: string,
+    code: string,
+    input: string[] = [''],
+  ): Promise<string> {
     try {
       switch (language.toLowerCase()) {
         case 'javascript':
@@ -21,7 +25,7 @@ export class CodeCompilerService {
             code,
           ]);
         case 'csharp':
-          return this.executeCS(code);
+          return this.executeCS(code, input);
         case 'java':
           return this.executeJava(code);
         case 'cpp':
@@ -154,7 +158,7 @@ export class CodeCompilerService {
     }
   }
 
-  private async executeCS(code: string): Promise<string> {
+  private async executeCS(code: string, input: string[]): Promise<string> {
     const folderName = uuidv4();
     try {
       const structuredCode = this.wrapCSharpCode(code);
@@ -176,9 +180,10 @@ export class CodeCompilerService {
         return compileResult.stderr;
       }
 
-      const executionResult = await this.executeProgram(
+      const executionResult = await this.executeProgramWithInput(
         folderName,
         execFileName,
+        input,
         'CP866',
       );
 
@@ -196,6 +201,46 @@ export class CodeCompilerService {
       await rm(folderName, { recursive: true });
     }
   }
+  private async executeProgramWithInput(
+    folderName: string,
+    execFileName: string,
+    input: string[] = [],
+    encoding: string,
+  ): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const childProcess = spawn(`./${folderName}/${execFileName}`, [], {
+        stdio: ['pipe', 'pipe'],
+      });
+
+      let output = '';
+      let error = '';
+
+      childProcess.stdout.on('data', (data) => {
+        output += iconv.decode(Buffer.from(data), encoding);
+      });
+
+      childProcess.stderr.on('data', (data) => {
+        error += iconv.decode(Buffer.from(data), encoding);
+      });
+
+      childProcess.stdin.write(input);
+
+      childProcess.stdin.end();
+
+      childProcess.on('error', (error) => {
+        reject(error);
+      });
+
+      childProcess.on('close', (exitCode) => {
+        if (exitCode === 0) {
+          resolve(output);
+        } else {
+          reject(error || 'Code execution failed');
+        }
+      });
+    });
+  }
+
   private removeHeader(errorMsg: string): string {
     const headerIndex = errorMsg.indexOf('error');
     if (headerIndex !== -1) {
@@ -210,6 +255,10 @@ export class CodeCompilerService {
       !code.includes('Main')
     ) {
       return `using System;
+      using System.Collections.Generic;
+      using System.Linq;
+      using System.Text;
+      using System.Threading.Tasks;
       namespace MyCode
       {
         class Program 

@@ -7,9 +7,9 @@ export class CodeCompilerController {
 
   @Post('execute')
   async executeCode(
-    @Body() requestBody: { language: string; code: string },
+    @Body() requestBody: { language: string; code: string; input: string[] },
   ): Promise<string> {
-    const { language, code } = requestBody;
-    return this.codeCompilerService.compileAndExecute(language, code);
+    const { language, code, input } = requestBody;
+    return this.codeCompilerService.compileAndExecute(language, code, input);
   }
 }
